@@ -4,6 +4,7 @@ This module exists to break circular import dependencies. The tool modules
 import from here, and diary_mcp.py also imports from here, avoiding cycles.
 """
 
+import json
 import os
 import sys
 import re
@@ -354,6 +355,77 @@ def load_supplemental_prompt():
             return text, True
         return text, True
     return DEFAULT_SUPPLEMENTAL_PROMPT, False
+
+# ---------------------------------------------------------------------------
+# Suppression list — persistent file tracking sessions marked "done"
+# ---------------------------------------------------------------------------
+
+SUPPRESSED_PATH = _project_root / "diary" / "suppressed.json"
+
+
+def read_suppressed():
+    """Read the suppression list. Returns list of dicts with session_id, suppressed_at, reason."""
+    if not SUPPRESSED_PATH.exists():
+        return []
+    try:
+        data = json.loads(SUPPRESSED_PATH.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def write_suppressed(entries):
+    """Write the suppression list to disk."""
+    SUPPRESSED_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SUPPRESSED_PATH.write_text(
+        json.dumps(entries, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def suppressed_set(entries=None):
+    """Return a dict mapping session_id -> suppressed_at (datetime) for quick lookup."""
+    if entries is None:
+        entries = read_suppressed()
+    result = {}
+    for e in entries:
+        sid = e.get("session_id", "")
+        ts_str = e.get("suppressed_at", "")
+        try:
+            result[sid] = datetime.fromisoformat(ts_str)
+        except (ValueError, TypeError):
+            result[sid] = None
+    return result
+
+
+def auto_unsuppress(sessions_by_id):
+    """Remove suppressed entries whose session has new user messages after suppressed_at.
+    sessions_by_id: dict mapping session_id -> session metadata dict (from list_all_sessions).
+    Uses the JSONL file's filesystem mtime (local time) for comparison, since
+    suppressed_at is also local time — avoids UTC vs local mismatches.
+    Returns (updated_entries, unsuppressed_ids)."""
+    entries = read_suppressed()
+    if not entries:
+        return entries, []
+
+    keep = []
+    unsuppressed = []
+    for e in entries:
+        sid = e.get("session_id", "")
+        sup_ts = suppressed_set([e]).get(sid)
+        if sup_ts and SESSION_DIR:
+            jsonl_path = SESSION_DIR / f"{sid}.jsonl"
+            if jsonl_path.exists():
+                jsonl_mtime = datetime.fromtimestamp(jsonl_path.stat().st_mtime)
+                if jsonl_mtime > sup_ts:
+                    unsuppressed.append(sid)
+                    continue
+        keep.append(e)
+
+    if unsuppressed:
+        write_suppressed(keep)
+    return keep, unsuppressed
+
 
 # Create the FastMCP server instance
 mcp = FastMCP("Diary")

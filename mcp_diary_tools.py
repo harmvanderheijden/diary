@@ -9,6 +9,7 @@ from diary_mcp_shared import (
     extract_entry_written_ts, extract_last_updated_ts,
     list_all_sessions, load_entry_prompt, load_supplemental_prompt,
     MIN_SUBSTANTIVE_SIZE, STALE_THRESHOLD_HOURS,
+    read_suppressed, write_suppressed, suppressed_set, auto_unsuppress,
 )
 from pathlib import Path
 
@@ -379,11 +380,14 @@ def diary_supplemental_prompt() -> str:
 
 
 @mcp.tool()
-def diary_check_new() -> str:
+def diary_check_new(max_stale_days: int = 0) -> str:
     """Check whether any sessions need new diary entries or supplementals.
     Compares session logs against existing diary entries.
-    Returns 4 categories: NEW (need full entry), STALE (need supplemental),
-    ONGOING (recently active, skip for now), CAUGHT UP."""
+    Returns categories: NEW (need full entry), STALE (need supplemental),
+    ONGOING (recently active, skip for now), SUPPRESSED (count), CAUGHT UP.
+
+    max_stale_days: if > 0, sessions whose diary entry is older than this many days
+    and that have no new user messages since the entry are auto-suppressed."""
     preamble, entries = read_entries()
 
     # Build index of existing diary entries by session ID
@@ -402,12 +406,21 @@ def diary_check_new() -> str:
     if not all_sessions:
         return "No session logs found. Check that the session directory exists."
 
+    # Auto-unsuppress sessions that have received new activity
+    sessions_by_id = {s["id"]: s for s in all_sessions}
+    _, unsuppressed_ids = auto_unsuppress(sessions_by_id)
+
+    # Load suppression list (after auto-unsuppress)
+    sup = suppressed_set()
+
     threshold = timedelta(hours=STALE_THRESHOLD_HOURS)
     now = datetime.now()
 
     new_sessions = []
     stale_sessions = []
     ongoing_sessions = []
+    suppressed_count = 0
+    auto_suppressed = []
     trivial_count = 0
 
     for s in all_sessions:
@@ -423,6 +436,11 @@ def diary_check_new() -> str:
         # Skip sessions with very few user messages
         if s["user_msgs"] < 3:
             trivial_count += 1
+            continue
+
+        # Skip suppressed sessions
+        if sid in sup:
+            suppressed_count += 1
             continue
 
         if sid not in existing_sids:
@@ -441,10 +459,33 @@ def diary_check_new() -> str:
                         if age < threshold:
                             ongoing_sessions.append((s, reference_ts))
                         else:
+                            # Auto-suppress if max_stale_days is set and entry is old enough
+                            if max_stale_days > 0:
+                                entry_age = now - reference_ts
+                                if entry_age.days >= max_stale_days:
+                                    auto_suppressed.append((s, reference_ts))
+                                    continue
                             stale_sessions.append((s, reference_ts))
+
+    # Persist any auto-suppressed sessions
+    if auto_suppressed:
+        sup_entries = read_suppressed()
+        now_str = datetime.now().isoformat(timespec="seconds")
+        for s, _ in auto_suppressed:
+            sup_entries.append({
+                "session_id": s["id"],
+                "suppressed_at": now_str,
+                "reason": f"auto-expired (>{max_stale_days}d)",
+            })
+        write_suppressed(sup_entries)
+        suppressed_count += len(auto_suppressed)
 
     # Build output
     lines = []
+
+    if unsuppressed_ids:
+        lines.append(f"(Auto-unsuppressed {len(unsuppressed_ids)} session(s) with new activity: "
+                      + ", ".join(sid[:8] + "…" for sid in unsuppressed_ids) + ")\n")
 
     if new_sessions:
         lines.append(f"=== NEW ({len(new_sessions)} sessions need full diary entries) ===\n")
@@ -475,20 +516,141 @@ def diary_check_new() -> str:
             lines.append(f"  - {s['id']}  (active within last {STALE_THRESHOLD_HOURS}h)")
         lines.append("")
 
+    if suppressed_count:
+        lines.append(f"=== SUPPRESSED ({suppressed_count} sessions hidden) ===\n")
+        if auto_suppressed:
+            lines.append(f"  ({len(auto_suppressed)} auto-suppressed this run, entry older than {max_stale_days}d)")
+        lines.append("  Use `diary_unsuppress` to restore specific sessions.\n")
+
     if not new_sessions and not stale_sessions:
         lines.append(
             f"All caught up. {len(existing_sids)} sessions in diary, "
             f"{len(all_sessions)} total session logs "
-            f"({trivial_count} skipped as trivial)."
+            f"({trivial_count} skipped as trivial"
+            + (f", {suppressed_count} suppressed" if suppressed_count else "")
+            + ")."
         )
         if ongoing_sessions:
             lines.append(f"({len(ongoing_sessions)} sessions still active — check again later.)")
     else:
         lines.append(f"Summary: {len(existing_sids)} in diary, {len(new_sessions)} new, "
                       f"{len(stale_sessions)} stale, {len(ongoing_sessions)} ongoing, "
-                      f"{trivial_count} trivial.")
+                      f"{trivial_count} trivial"
+                      + (f", {suppressed_count} suppressed" if suppressed_count else "")
+                      + ".")
 
     return "\n".join(lines)
+
+
+@mcp.tool()
+def diary_suppress(session_ids: str, reason: str = "user-dismissed") -> str:
+    """Suppress one or more sessions so they no longer appear in diary_check_new.
+    session_ids: comma-separated session IDs (full UUIDs or 8-char prefixes).
+    reason: optional reason string (default: 'user-dismissed').
+    Suppressed sessions auto-unsuppress if they receive new activity."""
+    raw_ids = [s.strip() for s in session_ids.split(",") if s.strip()]
+    if not raw_ids:
+        return "ERROR: No session IDs provided."
+
+    # Resolve prefixes to full IDs
+    all_sessions = list_all_sessions()
+    session_map = {s["id"]: s for s in all_sessions}
+
+    resolved = []
+    errors = []
+    for raw in raw_ids:
+        if raw in session_map:
+            resolved.append(raw)
+        else:
+            # Try prefix match
+            matches = [sid for sid in session_map if sid.startswith(raw)]
+            if len(matches) == 1:
+                resolved.append(matches[0])
+            elif len(matches) > 1:
+                errors.append(f"  {raw}: ambiguous, matches {len(matches)} sessions")
+            else:
+                errors.append(f"  {raw}: no matching session found")
+
+    if not resolved and errors:
+        return "ERROR: Could not resolve any session IDs:\n" + "\n".join(errors)
+
+    # Read existing suppression list and add new entries
+    existing = read_suppressed()
+    existing_sids = {e["session_id"] for e in existing}
+    now_str = datetime.now().isoformat(timespec="seconds")
+
+    added = []
+    skipped = []
+    for sid in resolved:
+        if sid in existing_sids:
+            skipped.append(sid)
+        else:
+            existing.append({
+                "session_id": sid,
+                "suppressed_at": now_str,
+                "reason": reason,
+            })
+            added.append(sid)
+
+    write_suppressed(existing)
+
+    parts = []
+    if added:
+        parts.append(f"Suppressed {len(added)} session(s):")
+        for sid in added:
+            parts.append(f"  + {sid[:8]}…")
+    if skipped:
+        parts.append(f"Already suppressed: {len(skipped)}")
+    if errors:
+        parts.append("Errors:")
+        parts.extend(errors)
+    return "\n".join(parts)
+
+
+@mcp.tool()
+def diary_unsuppress(session_ids: str) -> str:
+    """Remove one or more sessions from the suppression list so they reappear in diary_check_new.
+    session_ids: comma-separated session IDs (full UUIDs or 8-char prefixes)."""
+    raw_ids = [s.strip() for s in session_ids.split(",") if s.strip()]
+    if not raw_ids:
+        return "ERROR: No session IDs provided."
+
+    existing = read_suppressed()
+    if not existing:
+        return "Suppression list is empty — nothing to unsuppress."
+
+    # Build lookup of suppressed IDs
+    sup_sids = {e["session_id"] for e in existing}
+
+    to_remove = set()
+    errors = []
+    for raw in raw_ids:
+        if raw in sup_sids:
+            to_remove.add(raw)
+        else:
+            matches = [sid for sid in sup_sids if sid.startswith(raw)]
+            if len(matches) == 1:
+                to_remove.add(matches[0])
+            elif len(matches) > 1:
+                errors.append(f"  {raw}: ambiguous, matches {len(matches)} suppressed sessions")
+            else:
+                errors.append(f"  {raw}: not found in suppression list")
+
+    if not to_remove and errors:
+        return "ERROR: Could not resolve any session IDs:\n" + "\n".join(errors)
+
+    remaining = [e for e in existing if e["session_id"] not in to_remove]
+    write_suppressed(remaining)
+
+    parts = []
+    if to_remove:
+        parts.append(f"Unsuppressed {len(to_remove)} session(s):")
+        for sid in sorted(to_remove):
+            parts.append(f"  - {sid[:8]}…")
+    if errors:
+        parts.append("Errors:")
+        parts.extend(errors)
+    return "\n".join(parts)
 
 
 # Tool registry for CLI testing
@@ -506,4 +668,6 @@ _tools = {
     "diary_prompt": diary_prompt,
     "diary_supplemental_prompt": diary_supplemental_prompt,
     "diary_check_new": diary_check_new,
+    "diary_suppress": diary_suppress,
+    "diary_unsuppress": diary_unsuppress,
 }

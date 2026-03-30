@@ -7,6 +7,7 @@ MCP server and CLI tools for maintaining a structured diary from Claude Code ses
 - **Diary management**: chronologically ordered markdown entries with search, pagination, and case-based filtering
 - **Session log parsing**: extract summaries, outlines, and user messages from Claude Code JSONL session logs
 - **New entry detection**: automatically identifies sessions that need diary entries (NEW, STALE, ONGOING, CAUGHT UP)
+- **Stale session suppression**: mark finished sessions as "done" to keep check output clean; auto-unsuppresses if a session is re-opened
 - **Supplemental entries**: append follow-up notes to existing entries when a session continues
 - **Custom prompts**: per-project prompt templates for controlling diary entry style
 - **Dual interface**: works as an MCP server or standalone CLI
@@ -85,7 +86,9 @@ session_parser.py         ← Legacy standalone CLI for session parsing (works i
 | `diary_case` | `case_code` | Find all entries mentioning a case |
 | `diary_prompt` | — | Show the prompt template for generating new entries |
 | `diary_supplemental_prompt` | — | Show the prompt template for generating supplemental entries |
-| `diary_check_new` | — | 4-category check: NEW, STALE, ONGOING, or CAUGHT UP |
+| `diary_check_new` | `max_stale_days` | Check: NEW, STALE, ONGOING, SUPPRESSED, CAUGHT UP. Optional auto-suppress threshold. |
+| `diary_suppress` | `session_ids`, `reason` | Suppress sessions from diary_check_new (comma-separated IDs or 8-char prefixes) |
+| `diary_unsuppress` | `session_ids` | Remove sessions from the suppression list |
 
 ### Session tools
 
@@ -127,14 +130,17 @@ session_parser.py         ← Legacy standalone CLI for session parsing (works i
 ## Workflow for writing new diary entries
 
 1. Run `diary_check_new` to see which sessions need entries
-2. It reports 4 categories:
+2. It reports 5 categories:
    - **NEW** — sessions with no diary entry → use `diary_prompt` template
    - **STALE** — sessions with an entry but significant new activity → use `diary_supplemental_prompt` template
    - **ONGOING** — sessions active within the last 2 hours → skip for now
+   - **SUPPRESSED** — sessions explicitly marked as done (count only)
    - **CAUGHT UP** — everything accounted for
 3. For NEW sessions: use the template from `diary_prompt` (replacing `{SESSION_ID}` and `{SESSION_SHORT}`)
 4. For STALE sessions: use the template from `diary_supplemental_prompt` (replacing `{SESSION_ID}`, `{SESSION_SHORT}`, and `{AFTER_TIMESTAMP}`)
-5. Re-run `diary_check_new` to confirm
+5. To dismiss stale sessions you don't intend to process: `diary_suppress` with their session IDs
+6. To auto-suppress old stale sessions: `diary_check_new` with `max_stale_days=14`
+7. Re-run `diary_check_new` to confirm
 
 ## Project-specific prompts
 
@@ -145,6 +151,7 @@ diary/
   diary.md                        ← the diary itself
   diary_prompt.md                 ← custom entry prompt (optional)
   diary_supplemental_prompt.md    ← custom supplemental prompt (optional)
+  suppressed.json                 ← suppression list (auto-managed)
   tmp/                            ← staging area for entries before insertion
 ```
 
