@@ -26,6 +26,7 @@ from diary_mcp_shared import mcp
 # Import tool modules — each registers its @mcp.tool() decorated functions
 import mcp_diary_tools
 import mcp_session_tools
+import mcp_practice_tools
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +40,7 @@ def _cli_test():
     tools = {}
     tools.update(mcp_diary_tools._tools)
     tools.update(mcp_session_tools._tools)
+    tools.update(mcp_practice_tools._tools)
 
     if len(sys.argv) < 2 or sys.argv[1] == "--list-tools":
         print("Usage: python diary_mcp.py <tool_name> [args...]")
