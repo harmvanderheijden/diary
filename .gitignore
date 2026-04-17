@@ -5,3 +5,5 @@ __pycache__/
 dist/
 build/
 .eggs/
+seed_practice_db.py
+seed_work_log.py

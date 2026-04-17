@@ -297,6 +297,59 @@ class TestPracticeRules:
         assert practice_db.list_contexts() == []
 
 
+class TestFindSimilarRules:
+
+    def test_finds_similar_by_keywords(self):
+        import practice_db
+        practice_db.insert_rule(
+            rule="Do not use separate headings for each step in PSA arguments.",
+            contexts="inventive_step",
+        )
+        similar = practice_db.find_similar_rules(
+            "inventive_step", ["headings", "step", "arguments"]
+        )
+        assert len(similar) == 1
+        assert "headings" in similar[0]["rule"]
+
+    def test_no_match_different_context(self):
+        import practice_db
+        practice_db.insert_rule(rule="Check basis carefully.", contexts="basis_check")
+        similar = practice_db.find_similar_rules(
+            "inventive_step", ["basis", "carefully"]
+        )
+        assert len(similar) == 0
+
+    def test_no_match_different_keywords(self):
+        import practice_db
+        practice_db.insert_rule(rule="Use commas for abbreviations.", contexts="ep")
+        similar = practice_db.find_similar_rules("ep", ["headings", "arguments"])
+        assert len(similar) == 0
+
+    def test_skips_short_keywords(self):
+        import practice_db
+        practice_db.insert_rule(rule="Do not use headings.", contexts="test")
+        # All keywords < 4 chars should be skipped, returning context matches unfiltered
+        similar = practice_db.find_similar_rules("test", ["do", "not", "use"])
+        assert len(similar) == 1  # returns context match without keyword filtering
+
+    def test_ranks_by_keyword_hits(self):
+        import practice_db
+        practice_db.insert_rule(
+            rule="Always verify basis citations against filed text.",
+            contexts="basis_check",
+        )
+        practice_db.insert_rule(
+            rule="Check paragraph numbers in basis references against current text.",
+            contexts="basis_check",
+        )
+        similar = practice_db.find_similar_rules(
+            "basis_check", ["paragraph", "numbers", "basis", "references"]
+        )
+        assert len(similar) == 2
+        # Second rule has more keyword hits, should be ranked first
+        assert "paragraph" in similar[0]["rule"].lower()
+
+
 # ---------------------------------------------------------------------------
 # MCP tool integration tests (string output)
 # ---------------------------------------------------------------------------
@@ -399,3 +452,67 @@ class TestMCPTools:
         result = tools.practice_rules_list()
         assert "1 active" in result
         assert "A rule" in result
+
+    def test_practice_rules_add_detects_duplicate(self):
+        import mcp_practice_tools as tools
+        # Insert original
+        tools.practice_rules_add(
+            rule="Do not use separate headings for each step in problem-solution approach arguments.",
+            contexts="inventive_step,oa_response",
+        )
+        # Try to add near-duplicate
+        result = tools.practice_rules_add(
+            rule="When writing inventive step arguments, do not use separate headings for each step.",
+            contexts="inventive_step",
+        )
+        assert "DUPLICATE" in result
+        assert "practice_rules_update" in result
+
+    def test_practice_rules_add_allows_distinct(self):
+        import mcp_practice_tools as tools
+        tools.practice_rules_add(
+            rule="Do not use headings in PSA arguments.",
+            contexts="inventive_step",
+        )
+        # Different rule, same context
+        result = tools.practice_rules_add(
+            rule="Always verify basis citations against the filed description.",
+            contexts="inventive_step,basis_check",
+        )
+        assert "Added rule" in result
+
+    def test_practice_rules_add_force_bypasses_check(self):
+        import mcp_practice_tools as tools
+        tools.practice_rules_add(
+            rule="Do not use separate headings for each step in arguments.",
+            contexts="inventive_step",
+        )
+        # Force-add even though it's similar
+        result = tools.practice_rules_add_force(
+            rule="Do not use separate headings for each step in arguments (refined version).",
+            contexts="inventive_step",
+        )
+        assert "Force-added rule" in result
+
+    def test_check_setup_reports_status(self):
+        import mcp_practice_tools as tools
+        result = tools.practice_check_setup()
+        assert "Diary & Practice System Status" in result
+        # Should report on all components
+        assert "diary.md" in result
+        assert "practice.db" in result
+        assert "MEMORY.md" in result
+
+    def test_check_setup_shows_empty_db(self):
+        """With a fresh isolated DB, should show 0 rules."""
+        import mcp_practice_tools as tools
+        result = tools.practice_check_setup()
+        assert "0 active rules" in result or "MISSING" in result
+
+    def test_check_setup_shows_populated_db(self):
+        import mcp_practice_tools as tools
+        tools.practice_rules_add(rule="Test rule", contexts="test")
+        tools.work_log_insert(date="2026-04-17", action_type="test")
+        result = tools.practice_check_setup()
+        assert "1 active rules" in result
+        assert "1 work_log" in result

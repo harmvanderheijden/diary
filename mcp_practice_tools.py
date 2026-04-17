@@ -117,15 +117,57 @@ def practice_rules_lookup(contexts: str) -> str:
 @mcp.tool()
 def practice_rules_add(rule: str, contexts: str, rationale: str = "",
                        source_session: str = "") -> str:
-    """Add a new practice rule. rule: the instruction itself.
+    """Add a new practice rule. Automatically checks for near-duplicates first.
+    rule: the instruction itself.
     contexts: comma-separated tags (e.g. 'inventive_step,problem_solution_approach').
-    rationale: why this rule exists. source_session: session UUID where learned."""
+    rationale: why this rule exists. source_session: session UUID where learned.
+    If a similar rule exists, returns it instead of inserting — use
+    practice_rules_update to refine the existing rule if needed."""
+    # Extract distinctive keywords for duplicate check
+    stop = {"the", "and", "for", "that", "this", "with", "from", "when", "not",
+            "are", "was", "were", "been", "have", "has", "had", "will", "can",
+            "should", "must", "use", "using", "also", "does", "don", "into"}
+    keywords = [w.strip(".,;:!?'\"()") for w in rule.split()
+                if w.strip(".,;:!?'\"()").lower() not in stop and len(w) >= 4]
+
+    similar = practice_db.find_similar_rules(contexts, keywords)
+    if similar:
+        # Check if any candidate is a strong match (>40% keyword overlap)
+        best = similar[0]
+        best_lower = best["rule"].lower()
+        kw_lower = [k.lower() for k in keywords if len(k) >= 4]
+        hits = sum(1 for kw in kw_lower if kw in best_lower) if kw_lower else 0
+        overlap = hits / len(kw_lower) if kw_lower else 0
+
+        if overlap >= 0.4:
+            return (
+                f"DUPLICATE detected — existing rule #{best['id']} [{best['contexts']}] "
+                f"has {hits}/{len(kw_lower)} keyword overlap ({overlap:.0%}):\n\n"
+                f"EXISTING: {best['rule'][:200]}\n\n"
+                f"PROPOSED: {rule[:200]}\n\n"
+                f"Use practice_rules_update(rule_id={best['id']}, ...) to refine the "
+                f"existing rule, or call practice_rules_add_force to insert anyway."
+            )
+
     row_id = practice_db.insert_rule(
         rule=rule, rationale=rationale, contexts=contexts,
         source_session=source_session,
     )
     normalised = practice_db._normalise_contexts(contexts)
     return f"Added rule #{row_id} [{normalised}]: {rule[:80]}..."
+
+
+@mcp.tool()
+def practice_rules_add_force(rule: str, contexts: str, rationale: str = "",
+                             source_session: str = "") -> str:
+    """Force-add a practice rule, bypassing duplicate detection.
+    Use only after practice_rules_add flagged a duplicate that you've confirmed is distinct."""
+    row_id = practice_db.insert_rule(
+        rule=rule, rationale=rationale, contexts=contexts,
+        source_session=source_session,
+    )
+    normalised = practice_db._normalise_contexts(contexts)
+    return f"Force-added rule #{row_id} [{normalised}]: {rule[:80]}..."
 
 
 @mcp.tool()
@@ -172,6 +214,74 @@ def practice_rules_list(active_only: int = 1) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Setup check
+# ---------------------------------------------------------------------------
+
+@mcp.tool()
+def practice_check_setup() -> str:
+    """Check the diary + practice knowledge base setup for this project.
+    Reports status of all components and flags anything missing or misconfigured."""
+    info = practice_db.check_setup()
+    lines = ["Diary & Practice System Status\n"]
+
+    # Diary
+    d = info["diary_md"]
+    if d["status"] == "ok":
+        lines.append(f"  diary/diary.md              OK ({d['entries']} entries)")
+    else:
+        lines.append(f"  diary/diary.md              MISSING -- will be created on first diary entry")
+
+    # Practice DB
+    p = info["practice_db"]
+    if p["status"] == "ok":
+        lines.append(
+            f"  diary/practice.db           OK ({p['rules_active']} active rules, "
+            f"{p['rules_inactive']} inactive, {p['work_log_count']} work_log entries)"
+        )
+        if p["work_log_count"]:
+            lines.append(
+                f"    work_log range:           {p['work_log_range'][0]} to {p['work_log_range'][1]}"
+            )
+        lines.append(f"    context tags:             {p['context_tags']} tags")
+    else:
+        lines.append(f"  diary/practice.db           MISSING -- will be created on first tool call")
+        lines.append(f"    Run seed_practice_db.py to populate initial rules")
+
+    # Session dir
+    s = info["session_dir"]
+    if s["status"] == "ok":
+        lines.append(f"  session logs                OK ({s['sessions']} files)")
+    else:
+        lines.append(f"  session logs                MISSING -- no session directory found")
+
+    # Optional files
+    lines.append(f"  diary_prompt.md             {info['diary_prompt']}")
+    lines.append(
+        f"  diary_supplemental_prompt   {info['diary_supplemental_prompt']}"
+    )
+    lines.append(f"  suppressed.json             {info['suppressed_json']}")
+
+    # MEMORY.md integration
+    lines.append("")
+    m = info["memory_md"]
+    if m["status"] == "ok":
+        lines.append(f"  MEMORY.md                   OK")
+        checks = [
+            ("practice DB referenced", m["has_practice_db_ref"]),
+            ("lookup key rule", m["has_lookup_rule"]),
+            ("correction key rule", m["has_correction_rule"]),
+        ]
+        for label, ok in checks:
+            status = "OK" if ok else "MISSING -- add to Key Rules section"
+            lines.append(f"    {label:<28s} {status}")
+    else:
+        lines.append(f"  MEMORY.md                   MISSING at {m['path']}")
+        lines.append(f"    Create it and add practice DB references + key rules")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Tool registry for CLI testing
 # ---------------------------------------------------------------------------
 
@@ -182,6 +292,8 @@ _tools = {
     "practice_rules_contexts": practice_rules_contexts,
     "practice_rules_lookup": practice_rules_lookup,
     "practice_rules_add": practice_rules_add,
+    "practice_rules_add_force": practice_rules_add_force,
     "practice_rules_update": practice_rules_update,
     "practice_rules_list": practice_rules_list,
+    "practice_check_setup": practice_check_setup,
 }
