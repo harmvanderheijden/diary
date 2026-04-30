@@ -9,7 +9,7 @@ plus a practice knowledge base for accumulating operational rules and work histo
 - `diary_mcp_shared.py` — shared FastMCP instance, path detection, parsing helpers, prompt templates, suppression list I/O
 - `mcp_diary_tools.py` — diary management tools (15 tools registered via `@mcp.tool()`)
 - `mcp_session_tools.py` — session log parsing tools (4 tools)
-- `mcp_practice_tools.py` — practice knowledge base tools (8 tools: work_log + practice_rules)
+- `mcp_practice_tools.py` — practice knowledge base tools (10 tools: work_log, practice_rules, practice_check_setup)
 - `practice_db.py` — SQLite backend for the practice knowledge base (schema, CRUD helpers)
 - `diary_tool.py` — standalone CLI wrapper (thin layer over MCP tool functions)
 - `session_parser.py` — legacy standalone session parser

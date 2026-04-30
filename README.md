@@ -101,13 +101,13 @@ diary/
 | `diary_list` | — | List all entries with date, session ID, and title |
 | `diary_sessions` | — | List session IDs in the diary (for deduplication) |
 | `diary_page` | `page`, `size` | Paginate through full entry text (default: page 1, 5/page) |
-| `diary_search` | `keywords` | Search entries by space-separated keywords (AND logic) |
+| `diary_search` | `keywords`, `page`, `size` | Search entries by space-separated keywords (AND logic). Paginated (default 3/page). |
 | `diary_get` | `date_prefix` | Get entries by date (e.g. "25 February" or "2026-02-25") |
 | `diary_insert_from_file` | `file_path` | Insert entry from file at correct chronological position |
 | `diary_insert_text` | `entry_text` | Insert entry from raw text |
 | `diary_append_supplemental` | `session_id`, `file_path` or `text` | Append supplemental section to existing entry |
 | `diary_cases` | — | List all case codes with entry counts |
-| `diary_case` | `case_code` | Find all entries mentioning a case |
+| `diary_case` | `case_code`, `page`, `size` | Find all entries mentioning a case. Paginated (default 3/page). |
 | `diary_prompt` | — | Show the prompt template for generating new entries |
 | `diary_supplemental_prompt` | — | Show the prompt template for generating supplemental entries |
 | `diary_check_new` | `max_stale_days` | Check: NEW, STALE, ONGOING, SUPPRESSED, CAUGHT UP. Optional auto-suppress threshold. |
